@@ -86,7 +86,6 @@ class ImageSequenceDataset(Dataset):
     def __init__(
         self,
         path: str,
-        prompt_ids: torch.Tensor,
         prompt: str,
         n_sample_frame: int = 8,
         sampling_rate: int = 1,
@@ -118,7 +117,7 @@ class ImageSequenceDataset(Dataset):
         self.crop = crop_methods[crop]
 
         self.prompt = prompt
-        self.prompt_ids = prompt_ids
+        self.prompt_ids = None
 
     def __len__(self):
         return (self.n_images - self.sequence_length) // self.stride + 1
