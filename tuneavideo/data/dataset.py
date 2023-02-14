@@ -92,6 +92,7 @@ class ImageSequenceDataset(Dataset):
         prompt: str,
         n_sample_frame: int = 8,
         sampling_rate: int = 1,
+        dataset_size: int = None,
         stride: int = 1,
         image_mode: str = "RGB",
         image_size: int = 512,
@@ -103,6 +104,7 @@ class ImageSequenceDataset(Dataset):
 
         self.n_sample_frame = n_sample_frame
         self.sampling_rate = sampling_rate
+        self.dataset_size = dataset_size
 
         self.sequence_length = (n_sample_frame - 1) * sampling_rate + 1
         if self.n_images < self.sequence_length:
@@ -123,7 +125,12 @@ class ImageSequenceDataset(Dataset):
         self.prompt_ids = None
 
     def __len__(self):
-        return (self.n_images - self.sequence_length) // self.stride + 1
+        ds = (self.n_images - self.sequence_length) // self.stride + 1
+        if self.dataset_size is None:
+            return ds
+        elif self.dataset_size > ds:
+            raise ValueError(f"max dataset size={ds} asked for {self.dataset_size}")
+        return self.dataset_size
 
     def __getitem__(self, index):
         frame_indices = self.get_frame_indices(index)
