@@ -16,7 +16,7 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
-from diffusers import AutoencoderKL, DDPMScheduler, DDIMScheduler
+from diffusers import AutoencoderKL, DDPMScheduler, DPMSolverMultistepScheduler, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version
 from diffusers.utils.import_utils import is_xformers_available
@@ -24,7 +24,7 @@ from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
 
 from tuneavideo.models.unet import UNet3DConditionModel
-from tuneavideo.data.dataset import TuneAVideoDataset
+from tuneavideo.data.dataset import ImageSequenceDataset
 from tuneavideo.pipelines.pipeline_tuneavideo import TuneAVideoPipeline
 from tuneavideo.util import save_videos_grid
 from einops import rearrange
@@ -66,6 +66,7 @@ def main(
     use_8bit_adam: bool = False,
     enable_xformers_memory_efficient_attention: bool = True,
     seed: Optional[int] = None,
+    prior_preservation: Optional[float] = None
 ):
     *_, config = inspect.getargvalues(inspect.currentframe())
 
@@ -106,11 +107,18 @@ def main(
     vae = AutoencoderKL.from_pretrained(pretrained_model_path, subfolder="vae")
     unet = UNet3DConditionModel.from_pretrained_2d(pretrained_model_path, subfolder="unet")
 
+    if prior_preservation is not None:
+        unet2d = UNet2DConditionModel.from_pretrained(pretrained_model_path, subfolder="unet")
+    else:
+        unet2d = None
+
     # Freeze vae and text_encoder
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
-
     unet.requires_grad_(False)
+    if prior_preservation is not None:
+        unet2d.requires_grad_(False)
+
     for name, module in unet.named_modules():
         if name.endswith(tuple(trainable_modules)):
             for params in module.parameters():
@@ -119,6 +127,8 @@ def main(
     if enable_xformers_memory_efficient_attention:
         if is_xformers_available():
             unet.enable_xformers_memory_efficient_attention()
+            if prior_preservation is not None:
+                unet2d.enable_xformers_memory_efficient_attention()
         else:
             raise ValueError("xformers is not available. Make sure it is installed correctly")
 
@@ -152,7 +162,7 @@ def main(
     )
 
     # Get the training dataset
-    train_dataset = TuneAVideoDataset(**train_data)
+    train_dataset = ImageSequenceDataset(**train_data)
 
     # Preprocessing the dataset
     train_dataset.prompt_ids = tokenizer(
@@ -167,7 +177,7 @@ def main(
     # Get the validation pipeline
     validation_pipeline = TuneAVideoPipeline(
         vae=vae, text_encoder=text_encoder, tokenizer=tokenizer, unet=unet,
-        scheduler=DDIMScheduler.from_pretrained(pretrained_model_path, subfolder="scheduler")
+        scheduler=DPMSolverMultistepScheduler.from_pretrained(pretrained_model_path, subfolder="scheduler")
     )
 
     # Scheduler
@@ -194,6 +204,9 @@ def main(
     # Move text_encode and vae to gpu and cast to weight_dtype
     text_encoder.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
+    if prior_preservation is not None:
+        unet2d.to(accelerator.device, dtype=weight_dtype)
+        unet2d.eval()
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / gradient_accumulation_steps)
@@ -286,7 +299,17 @@ def main(
 
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(loss.repeat(train_batch_size)).mean()
-                train_loss += avg_loss.item() / gradient_accumulation_steps
+
+                if prior_preservation is not None:
+                    model_pred_2d = unet2d(noisy_latents[:, :, 0], timesteps, encoder_hidden_states).sample
+                    prior_loss = F.mse_loss(model_pred[:, :, 0].float(), model_pred_2d.float(), reduction="mean")
+                    avg_prior_loss = accelerator.gather(prior_loss.repeat(train_batch_size)).mean()
+                    loss = avg_loss + avg_prior_loss * prior_preservation
+                    print(f"loss={avg_loss:.5f} prior-loss={avg_prior_loss:.5f} total-loss={loss}")
+                else:
+                    loss = avg_loss
+
+                train_loss += loss.item() / gradient_accumulation_steps
 
                 # Backpropagate
                 accelerator.backward(loss)
