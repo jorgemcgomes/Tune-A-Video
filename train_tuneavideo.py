@@ -66,7 +66,7 @@ def main(
         enable_xformers_memory_efficient_attention: bool = True,
         seed: Optional[int] = None,
         prior_preservation: Optional[float] = None,
-        prior_preservation_first_frame_only=False
+        prior_preservation_first_frame_only=False,
 ):
     *_, config = inspect.getargvalues(inspect.currentframe())
 
@@ -354,10 +354,11 @@ def main(
                         for idx, prompt in enumerate(validation_data.prompts):
                             sample = validation_pipeline(prompt, generator=generator, **validation_data).videos
                             save_videos_grid(sample,
-                                             os.path.join(output_dir, f"samples/sample-{global_step}/{prompt}.gif"))
+                                             os.path.join(output_dir, f"samples/sample-{global_step}/{prompt}.gif"),
+                                             fps=validation_data.fps)
                             samples.append(sample)
                         samples = torch.concat(samples)
-                        save_videos_grid(samples, save_path)
+                        save_videos_grid(samples, save_path, fps=validation_data.fps)
                         logger.info(f"Saved samples to {save_path}")
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
