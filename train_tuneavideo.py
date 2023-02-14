@@ -29,7 +29,6 @@ from tuneavideo.pipelines.pipeline_tuneavideo import TuneAVideoPipeline
 from tuneavideo.util import save_videos_grid
 from einops import rearrange
 
-
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.10.0.dev0")
 
@@ -37,36 +36,37 @@ logger = get_logger(__name__, log_level="INFO")
 
 
 def main(
-    pretrained_model_path: str,
-    output_dir: str,
-    train_data: Dict,
-    validation_data: Dict,
-    validation_steps: int = 100,
-    trainable_modules: Tuple[str] = (
-        "attn1.to_q",
-        "attn2.to_q",
-        "attn_temp",
-    ),
-    train_batch_size: int = 1,
-    max_train_steps: int = 500,
-    learning_rate: float = 3e-5,
-    scale_lr: bool = False,
-    lr_scheduler: str = "constant",
-    lr_warmup_steps: int = 0,
-    adam_beta1: float = 0.9,
-    adam_beta2: float = 0.999,
-    adam_weight_decay: float = 1e-2,
-    adam_epsilon: float = 1e-08,
-    max_grad_norm: float = 1.0,
-    gradient_accumulation_steps: int = 1,
-    gradient_checkpointing: bool = True,
-    checkpointing_steps: int = 500,
-    resume_from_checkpoint: Optional[str] = None,
-    mixed_precision: Optional[str] = "fp16",
-    use_8bit_adam: bool = False,
-    enable_xformers_memory_efficient_attention: bool = True,
-    seed: Optional[int] = None,
-    prior_preservation: Optional[float] = None
+        pretrained_model_path: str,
+        output_dir: str,
+        train_data: Dict,
+        validation_data: Dict,
+        validation_steps: int = 100,
+        trainable_modules: Tuple[str] = (
+                "attn1.to_q",
+                "attn2.to_q",
+                "attn_temp",
+        ),
+        train_batch_size: int = 1,
+        max_train_steps: int = 500,
+        learning_rate: float = 3e-5,
+        scale_lr: bool = False,
+        lr_scheduler: str = "constant",
+        lr_warmup_steps: int = 0,
+        adam_beta1: float = 0.9,
+        adam_beta2: float = 0.999,
+        adam_weight_decay: float = 1e-2,
+        adam_epsilon: float = 1e-08,
+        max_grad_norm: float = 1.0,
+        gradient_accumulation_steps: int = 1,
+        gradient_checkpointing: bool = True,
+        checkpointing_steps: int = 500,
+        resume_from_checkpoint: Optional[str] = None,
+        mixed_precision: Optional[str] = "fp16",
+        use_8bit_adam: bool = False,
+        enable_xformers_memory_efficient_attention: bool = True,
+        seed: Optional[int] = None,
+        prior_preservation: Optional[float] = None,
+        prior_preservation_first_frame_only=False
 ):
     *_, config = inspect.getargvalues(inspect.currentframe())
 
@@ -137,7 +137,7 @@ def main(
 
     if scale_lr:
         learning_rate = (
-            learning_rate * gradient_accumulation_steps * train_batch_size * accelerator.num_processes
+                learning_rate * gradient_accumulation_steps * train_batch_size * accelerator.num_processes
         )
 
     # Initialize the optimizer
@@ -166,7 +166,8 @@ def main(
 
     # Preprocessing the dataset
     train_dataset.prompt_ids = tokenizer(
-        train_dataset.prompt, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
+        train_dataset.prompt, max_length=tokenizer.model_max_length, padding="max_length", truncation=True,
+        return_tensors="pt"
     ).input_ids[0]
 
     # DataLoaders creation:
@@ -249,7 +250,7 @@ def main(
         resume_step = global_step % num_update_steps_per_epoch
 
     # Only show the progress bar once on each machine.
-    progress_bar = tqdm(range(global_step, max_train_steps), disable=not accelerator.is_local_main_process)
+    progress_bar = tqdm(range(global_step, max_train_steps), disable=not accelerator.is_local_main_process, ncols=140)
     progress_bar.set_description("Steps")
 
     for epoch in range(first_epoch, num_train_epochs):
@@ -301,12 +302,23 @@ def main(
                 avg_loss = accelerator.gather(loss.repeat(train_batch_size)).mean()
 
                 if prior_preservation is not None:
-                    model_pred_2d = unet2d(noisy_latents[:, :, 0], timesteps, encoder_hidden_states).sample
-                    prior_loss = F.mse_loss(model_pred[:, :, 0].float(), model_pred_2d.float(), reduction="mean")
+                    # this is working only for frame 0? why? couldnt we use all frames for the prior instead?
+                    if prior_preservation_first_frame_only:
+                        model_pred_2d = unet2d(noisy_latents[:, :, 0], timesteps, encoder_hidden_states).sample
+                        prior_loss = F.mse_loss(model_pred[:, :, 0].float(), model_pred_2d.float(), reduction="mean")
+                    else:
+                        noisy_latents_2d = rearrange(noisy_latents, "b c f h w -> (b f) c h w")
+                        timesteps_2d = timesteps.repeat(noisy_latents_2d.shape[0])
+                        encoder_hidden_states_2d = encoder_hidden_states.repeat(noisy_latents_2d.shape[0], 1, 1)
+                        model_pred_2d = unet2d(noisy_latents_2d, timesteps_2d, encoder_hidden_states_2d).sample
+                        target_2d = rearrange(model_pred, "b c f h w -> (b f) c h w")
+                        prior_loss = F.mse_loss(target_2d.float(), model_pred_2d.float(), reduction="mean")
+
                     avg_prior_loss = accelerator.gather(prior_loss.repeat(train_batch_size)).mean()
                     loss = avg_loss + avg_prior_loss * prior_preservation
-                    print(f"loss={avg_loss:.5f} prior-loss={avg_prior_loss:.5f} total-loss={loss}")
+                    extra_logs = {"unet3d_loss": avg_loss.item(), "prior_loss": avg_prior_loss.item()}
                 else:
+                    extra_logs = {}
                     loss = avg_loss
 
                 train_loss += loss.item() / gradient_accumulation_steps
@@ -340,14 +352,15 @@ def main(
                         generator.manual_seed(seed)
                         for idx, prompt in enumerate(validation_data.prompts):
                             sample = validation_pipeline(prompt, generator=generator, **validation_data).videos
-                            save_videos_grid(sample, os.path.join(output_dir, f"samples/sample-{global_step}/{prompt}.gif"))
+                            save_videos_grid(sample,
+                                             os.path.join(output_dir, f"samples/sample-{global_step}/{prompt}.gif"))
                             samples.append(sample)
                         samples = torch.concat(samples)
                         save_videos_grid(samples, save_path)
                         logger.info(f"Saved samples to {save_path}")
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-            progress_bar.set_postfix(**logs)
+            progress_bar.set_postfix(**logs, **extra_logs)
 
             if global_step >= max_train_steps:
                 break
