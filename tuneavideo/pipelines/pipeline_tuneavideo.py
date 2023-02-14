@@ -235,11 +235,15 @@ class TuneAVideoPipeline(DiffusionPipeline):
 
         return text_embeddings
 
-    def decode_latents(self, latents):
+    def decode_latents(self, latents, batch_size=8):
         video_length = latents.shape[2]
         latents = 1 / 0.18215 * latents
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
-        video = self.vae.decode(latents).sample
+        decoded = []
+        for i in range(0, len(latents), batch_size):
+            frame = self.vae.decode(latents[i:i+batch_size]).sample
+            decoded.append(frame)
+        video = torch.cat(decoded, dim=0)
         video = rearrange(video, "(b f) c h w -> b c f h w", f=video_length)
         video = (video / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
