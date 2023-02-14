@@ -8,11 +8,11 @@ import torchvision
 from einops import rearrange
 
 
-def save_videos_grid(videos: torch.Tensor, path: str, rescale=False, n_rows=4, fps=3):
+def save_videos_grid(videos: torch.Tensor, path: str, rescale=False, n_col=2, fps=10):
     videos = rearrange(videos, "b c t h w -> t b c h w")
     outputs = []
     for x in videos:
-        x = torchvision.utils.make_grid(x, nrow=n_rows)
+        x = torchvision.utils.make_grid(x, nrow=2)
         x = x.transpose(0, 1).transpose(1, 2).squeeze(-1)
         if rescale:
             x = (x + 1.0) / 2.0  # -1,1 -> 0,1

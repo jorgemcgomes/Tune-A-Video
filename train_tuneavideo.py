@@ -180,6 +180,7 @@ def main(
         vae=vae, text_encoder=text_encoder, tokenizer=tokenizer, unet=unet,
         scheduler=DPMSolverMultistepScheduler.from_pretrained(pretrained_model_path, subfolder="scheduler")
     )
+    validation_pipeline.set_progress_bar_config(disable=True)
 
     # Scheduler
     lr_scheduler = get_scheduler(
