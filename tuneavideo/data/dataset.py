@@ -5,6 +5,9 @@ from torch.utils.data import Dataset
 from einops import rearrange
 import random
 import torch
+import os
+from PIL import Image
+import numpy as np
 
 
 IMAGE_EXTENSION = (".jpg", ".jpeg", ".png", ".ppm", ".bmp", ".pgm", ".tif", ".tiff", ".webp")
@@ -126,9 +129,9 @@ class ImageSequenceDataset(Dataset):
         frame_indices = self.get_frame_indices(index)
         frames = [self.load_frame(i) for i in frame_indices]
         frames = self.transform(frames)
-
+        pixel_values = rearrange(frames, "c f h w -> f c h w")
         return {
-            "images": frames,
+            "pixel_values": pixel_values,
             "prompt_ids": self.prompt_ids,
         }
 
@@ -141,7 +144,7 @@ class ImageSequenceDataset(Dataset):
     @staticmethod
     def tensorize_frames(frames):
         frames = rearrange(np.stack(frames), "f h w c -> c f h w")
-        return torch.from_numpy(frames).div(255) * 2 - 1
+        return torch.from_numpy(frames).div(255) * 2 - 1.0
 
     def load_frame(self, index):
         image_path = os.path.join(self.path, self.images[index])
